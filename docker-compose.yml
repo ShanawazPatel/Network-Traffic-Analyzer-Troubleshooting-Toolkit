@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  router:
+    build: .
+    container_name: netpulse-router
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    command: >
+      bash -c "
+        sysctl -w net.ipv4.ip_forward=1
+        iptables -F
+        iptables -P FORWARD DROP
+        iptables -A FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT
+        iptables -A FORWARD -p tcp --dport 80 -j ACCEPT
+        iptables -A FORWARD -p icmp -m limit --limit 5/s -j ACCEPT
+        iptables -A FORWARD -s 10.10.1.99 -j DROP
+        echo 'NetPulse Router & Firewall Active'
+        tail -f /dev/null
+      "
+    networks:
+      client_net:
+        ipv4_address: 10.10.1.1
+      server_net:
+        ipv4_address: 10.10.2.1
+
+  server:
+    build: .
+    container_name: netpulse-server
+    command: python3 -m http.server 80
+    networks:
+      server_net:
+        ipv4_address: 10.10.2.80
+
+  client:
+    build: .
+    container_name: netpulse-client
+    depends_on:
+      - router
+      - server
+    command: >
+      bash -c "
+        ip route del default
+        ip route add default via 10.10.1.1
+        echo 'Client ready. Probing server...'
+        ping -c 3 10.10.2.80
+        curl -s -I http://10.10.2.80
+        python3 -m netpulse health --target 10.10.2.80 --port 80
+        tail -f /dev/null
+      "
+    networks:
+      client_net:
+        ipv4_address: 10.10.1.10
+
+  attacker:
+    build: .
+    container_name: netpulse-attacker
+    depends_on:
+      - router
+    command: >
+      bash -c "
+        ip route del default
+        ip route add default via 10.10.1.1
+        echo 'Attacker ready. Attempting probe to server...'
+        ping -c 3 -W 1 10.10.2.80 || echo 'Attacker correctly blocked by firewall!'
+        tail -f /dev/null
+      "
+    networks:
+      client_net:
+        ipv4_address: 10.10.1.99
+
+networks:
+  client_net:
+    ipam:
+      config:
+        - subnet: 10.10.1.0/24
+  server_net:
+    ipam:
+      config:
+        - subnet: 10.10.2.0/24
